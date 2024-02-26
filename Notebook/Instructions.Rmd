@@ -1,0 +1,323 @@
+---
+title: "GWAS Practicum"
+date: "2023-04-01"
+output:
+  html_document:
+    df_print: paged
+  word_document: default
+  pdf_document: default
+---
+
+This exercise is designed to help you run your own GWAS. Follow the instructions below and answer the questions.
+
+## Data
+
+Look at the files and familiarize yourself with the data contained in them. The .bim file is not readable
+
+```         
+head(sample.bim)
+head(sample.fam)
+```
+
+```         
+Question 1: What are these files, what does each of them contain?
+```
+
+## Exercise 1: Variant QC
+
+Evaluate missing variants.
+
+```         
+! ./plink --bfile sample --missing --out miss
+```
+
+.lmiss is the variant-based missing data report; output .imiss is the sample-based missing data report. Make sure you look at the correct one!
+
+```         
+Question 2: Which variant(s) have the highest and lowest number of missingness?
+```
+
+Remove variants that have greater than 5% missingness
+
+```         
+./plink --bfile sample --geno 0.05 --make-bed --out miss
+```
+
+```         
+Question 3: how many variants were removed? 
+```
+
+Check the allele frequencies of remaining variants. The output will end in .frq
+
+```         
+./plink --bfile miss --freq --make-bed --out freq
+```
+
+```         
+Question 4: What is the range of MAFs of these variants?
+Question 5: How many variants have a MAF > 10%?
+```
+
+Remove variants that have a MAF less than 5% to keep only common variants
+
+```         
+Question 6: How many variants were dropped?
+```
+
+Next, filter out variants that have Hardy-Weinberg disequilibrium
+
+```         
+./plink --bfile freq --hardy --make-bed --out hardy
+```
+
+```         
+Question 7: How many variants were not in Hardy-Weinberg equilibrium?
+```
+
+Check for differential genotyping rate (case vs. control). --test-missing tries to detect platform/batch differences between case and control genotype data by performing Fisher's exact test on case/control missing call counts at each variant.Any variant which comes up as highly significant under this test should be treated with great caution; spurious association results are likely.
+
+```         
+./plink --bfile hardy --test-missing --out test_miss
+```
+
+Select variant with genotyping rate difference between case and control \< 1e-2
+
+```         
+customize an awk command for this
+```
+
+```         
+Question 8: How many variants had differential genotyping rates between cases and controls?
+```
+
+Exclude variants that have differential genotyping rates
+
+```         
+./plink --bfile hardy --exclude test_mis_snp.ls --make-bed --out clean_snp
+```
+
+```         
+Question 9: How many variants are left after Variant QC?
+```
+
+Now, re-run the Variant QC, but this time, run all steps at once, filling in the appropriate values where necessary. Change the MAF filter to remove variants that have a MAF of less 1%
+
+```         
+./plink --bfile sample --hwe\
+--hwe-all --geno --maf\
+--exclude test_mis_snp.ls\
+--make-bed --out clean_snp --noweb
+```
+
+```         
+Question 10: How many variants passed your QC step?
+```
+
+## Exercise 2: Sample QC
+
+Now, follow the steps below to run Sample level QC.
+
+Filter out samples with more than 5% missing genotypes using --mind 0.05. Remember, after every step you need to make new bed files.
+
+```         
+Question 11: How many individuals were dropped from this filter? How many males and females are in your dataset?
+```
+
+Next, identify duplicated or related individuals
+
+```         
+./plink --bfile clean_snp_indiv --genome --out IBD
+```
+
+Customize an awk command to extract a list of individuals with PI_HAT less than or equal to 0.2, called 'IBD_prob.rm'. Remove these individuals with the following command:
+
+```         
+./plink --bfile clean_snp_indiv --remove IBD_prob.rm --make-bed --out clean_snp_ibd
+```
+
+```         
+Question 12: How many individuals remain after the relatedness filter? How many cases/controls?
+```
+
+Sample QC complete! Here is how to run all filters at once
+
+```         
+./plink --bfile clean_snp --mind 0.05 \
+ --remove IBD_prob.rm \
+ --make-bed --out clean_snp_ibd
+```
+
+## Population Structure
+
+Run Principal Components Analysis to identify the top 10 principal components in your dataset
+
+```         
+./plink --bfile clean_snp_ibd --pca 10 --out clean_snp_pca
+```
+
+```         
+Question 13: Which PC explains the most variability for sample KNIHGR004954?
+```
+
+### In R
+
+Install the ggplot library
+
+```         
+install.packages("ggplot2")
+```
+
+Load necessary libraries, Plink PCA output, and phenotype file. Then merge the PCA data with phenotype data.
+
+```         
+library(ggplot2)
+library(data.table)
+
+pca_data <- fread("clean_snp_pca.eigenvec", header = FALSE)
+
+
+phenotype <- fread("clean_snp_ibd.fam", header = FALSE)
+
+merged_data <- merge(pca_data, phenotype, by.x = "V2", by.y = "V2")
+head(merged_data)
+```
+
+Plot the PCA with PC1 and PC2, using different colors for cases and controls
+
+`````         
+ggplot(merged_data, aes(x = V3.x, y = V4.x, color = factor(V6.y))) +
+  geom_point() +
+  labs(x = "PC1", y = "PC2", color = "Case vs Control") +
+  theme_minimal()
+```
+
+````
+Question 14: Do any cases or controls stand out in any way?
+`````
+
+### In Plink
+
+Run the following logistic regression model. :
+
+```         
+ case/control status \ β0 + variant + age + sex + PC1 + .... + PC10
+```
+
+```         
+./plink --bfile clean_snp_ibd --logistic --covar sample_phe.txt --covar-name sex,age,PC1-PC10 --parameters 1 --out logistic 
+```
+
+```         
+Question 15: Which variant has the smallest  p-value?
+```
+
+But wait, we haven't adjusted for multiple testing!
+
+```         
+./plink --bfile clean_snp_ibd --logistic --covar sample_phe.txt --covar-name sex,age,PC1-PC10 --parameters 1 --out logistic --adjust
+```
+
+```         
+Question 16: Now, which variant reaches significance according to the adjusted p-value?
+```
+
+### In R
+
+Let's take a look at the results. Plot the Manhattan plot
+
+```         
+mhtdata <- read.table('logistic.assoc.logistic',header=T) #change from sample.assoc to logistic.assoc.logistic
+data2 <- mhtdata[!apply(is.na(mhtdata), 1, any), ]
+oo <-order(data2$CHR)
+data2 <-data2[oo,]
+chrlabel_pos <- allchr <- as.vector(table(data2$CHR))
+n.chr <- length(allchr)
+chrindex<- cumsum(allchr)
+labels <- unique(data2$CHR)
+pos <- newpos<-data2$BP
+chr_colors <- rep(c("royalblue1","blue4"),11)
+
+for (i in 1:n.chr) {
+        endP <- chrindex[i]
+        stP <- chrindex[i] - allchr[i] + 1
+        d <- rep(1, allchr[i])
+        newpos[stP:endP] <- d
+}
+CM <- cumsum(as.numeric(newpos))
+Y <- -log(data2$P,10)
+
+png('manh.png',width=2000,height=1000,units="px",bg="white",res=200)
+
+if(max(Y) < -log10(0.05/length(Y))) {
+       plot(CM, Y, type="n",xaxt="n", xlab="chromosome",
+ylab=expression(paste(-log[10],"(P-value)") ), main="Manhattan
+Plot",ylim=c(0,-log10(0.05/length(Y))+1))
+} else {
+plot(CM, Y, type="n",xaxt="n", xlab="chromosome", ylab=expression(paste(-log[10],"(P-value)") ), main="Manhattan Plot")
+}
+
+for (i in 1:n.chr) {
+        u <- chrindex[i]
+        l <- chrindex[i] - allchr[i] + 1
+        chr <- l:u
+        y <- -log(data2$P[chr], 10)
+        points(CM[chr], y, col = chr_colors[i],
+        cex = 0.8, pch=20)
+        midchr<- chrindex[i] - allchr[i]/2 + 1
+        chrlabel_pos[i] <-CM[midchr]
+}
+axis(1, at = chrlabel_pos, labels = labels)
+abline(h=-log10(0.05/length(Y)),lty=2)
+dev.off()
+```
+
+Look at the plot saved to your folder.
+
+```         
+Question 17: Which chromosome has a SNP that is closest to the significance threshold?
+```
+
+Now plot the QQ plot
+
+```         
+p.val <- data2$P
+y <- -log(p.val,10)
+v <- -log10(0.05/sum(is.finite(y)))
+o.y <- sort(y[is.finite(y)],decreasing=T)
+xx<- (1:length(o.y))/length(o.y)
+x <- -log(xx,10)
+ifelse(max(o.y[is.finite(o.y)])>=x[1],YY<-o.y,YY<-x)
+## plot ##
+png('QQplot.png',width=1000,height=1000,units="px",bg="white",res=200)
+plot(YY, YY, type = "n", xlab = expression(paste("Expected",-log[10],"(p-value)")), ylab = expression(paste("Observed",-log[10],"(p-value)")))
+
+N=length(o.y)
+c95 <- rep(0,N)
+c05 <- rep(0,N)
+for(i in 1:N){
+       c95[i] <- qbeta(0.95,i,N-i+1)
+       c05[i] <- qbeta(0.05,i,N-i+1)
+}
+abline(h = c(0:max(max(x),max(o.y[is.finite(o.y)]))), v =c(0:max(max(x),max(o.y[is.finite(o.y)]))), col = "darkgray", lty=3)
+polygon(c(x,sort(x)),c(-log(c95,10),sort(-log(c05,10))),col=c("gray"),border=NA)
+abline(a=0,b=1,col="black", lty=1)
+points(x, o.y, cex = .5, col = "dark red")
+dev.off()
+```
+
+```         
+Question 18: Does the QQ plot show any evidence of inflation?
+```
+
+Calculate the genomic inflation factor
+
+```         
+chisq <- qchisq(1-p.val,1)
+median(chisq)/qchisq(0.5,1)
+```
+
+```         
+Question 19: What does the genomic inflation factor indicate?
+
+Question 20: Does your GWAS show signs of inflation?
+```
